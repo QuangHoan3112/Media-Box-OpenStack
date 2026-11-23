@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MediaBox</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #182332; background: #f3f6fa; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { background: #183153; color: white; padding: 20px max(20px, calc((100vw - 1050px)/2)); }
+    header h1 { margin: 0; font-size: 26px; }
+    header p { margin: 5px 0 0; color: #c9d7e8; }
+    main { max-width: 1050px; margin: 25px auto; padding: 0 18px; }
+    .card { background: white; border: 1px solid #dee5ef; border-radius: 12px; padding: 20px; margin-bottom: 18px; }
+    h2 { margin: 0 0 16px; font-size: 19px; }
+    input, textarea, button { font: inherit; }
+    input:not([type=checkbox]), textarea { width: 100%; padding: 10px; margin: 6px 0 12px; border: 1px solid #bdc8d7; border-radius: 7px; }
+    label { display: block; font-weight: 600; font-size: 14px; }
+    button { background: #196baf; color: white; border: 0; border-radius: 7px; padding: 10px 14px; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .secondary { background: #edf2f8; color: #183153; }
+    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .between { justify-content: space-between; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    .item { border: 1px solid #dde5ef; border-radius: 9px; padding: 14px; }
+    .item h3 { margin: 0 0 7px; overflow-wrap: anywhere; }
+    .muted { color: #526477; font-size: 13px; }
+    #message { min-height: 24px; margin: 13px 0; font-weight: 600; }
+    #preview video, #preview audio, #preview img { display: block; max-width: 100%; max-height: 450px; margin-top: 12px; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<header><h1>MediaBox</h1><p>OpenStack Private Cloud · FastAPI · Swift · PostgreSQL</p></header>
+<main>
+  <p id="message" role="status" aria-live="polite"></p>
+  <section class="card" id="loginPanel">
+    <h2>Đăng nhập</h2>
+    <form id="loginForm">
+      <label for="username">Tên đăng nhập</label>
+      <input id="username" name="username" autocomplete="username" required>
+      <label for="password">Mật khẩu</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button>Đăng nhập</button>
+    </form>
+  </section>
+  <section id="workspace" hidden>
+    <div class="card row between">
+      <strong id="currentUser"></strong>
+      <button class="secondary" id="logout">Đăng xuất</button>
+    </div>
+    <div class="card">
+      <h2>Upload lên Swift</h2>
+      <form id="uploadForm">
+        <label for="title">Tiêu đề</label><input id="title" name="title" required maxlength="255">
+        <label for="description">Mô tả</label><textarea id="description" name="description" rows="2"></textarea>
+        <label for="file">Chọn file (tối đa 100 MB)</label><input id="file" name="file" type="file" required>
+        <label class="row"><input name="is_public" type="checkbox" value="true"> Công khai</label>
+        <p><button>Upload file</button></p>
+      </form>
+    </div>
+    <div class="card">
+      <div class="row between"><h2>Thư viện media</h2><button class="secondary" id="refresh">Làm mới</button></div>
+      <div class="grid" id="mediaList"></div>
+    </div>
+    <div class="card" id="previewPanel" hidden>
+      <h2 id="previewTitle">Xem media</h2>
+      <div id="preview"></div>
+    </div>
+  </section>
+</main>
+<script>
+  const $ = id => document.getElementById(id);
+  let token = "", previewUrl = null;
+  function message(text, error = false) {
+    $("message").textContent = text;
+    $("message").style.color = error ? "#b42318" : "#176647";
+  }
+  async function api(path, options = {}) {
+    const headers = new Headers(options.headers || {});
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(path, {...options, headers});
+    if (!response.ok) {
+      let detail = response.statusText;
+      try { const data = await response.json(); detail = JSON.stringify(data.detail || data); } catch {}
+      throw new Error(`HTTP ${response.status}: ${detail}`);
+    }
+    return response;
+  }
+  async function reload() {
+    const data = await (await api("/api/media?limit=100")).json();
+    const list = $("mediaList");
+    list.replaceChildren();
+    if (!data.items.length) { list.textContent = "Chưa có media được phép xem."; return; }
+    for (const item of data.items) {
+      const box = document.createElement("div"); box.className = "item";
+      const title = document.createElement("h3"); title.textContent = item.title;
+      const info = document.createElement("p"); info.className = "muted";
+      info.textContent = `${item.media_type} · ${Number(item.size_bytes).toLocaleString("vi-VN")} bytes · ${item.is_public ? "Công khai" : "Riêng tư"}`;
+      const actions = document.createElement("div"); actions.className = "row";
+      const view = document.createElement("button"); view.textContent = "Xem / Phát";
+      view.disabled = !["audio", "video", "image"].includes(item.media_type);
+      view.onclick = () => preview(item).catch(e => message(e.message, true));
+      const download = document.createElement("button"); download.textContent = "Tải về";
+      download.className = "secondary"; download.disabled = !item.can_download;
+      download.onclick = () => downloadFile(item).catch(e => message(e.message, true));
+      actions.append(view, download);
+      if (item.is_owner) {
+        const grant = document.createElement("button"); grant.textContent = "Cấp quyền";
+        grant.className = "secondary";
+        grant.onclick = () => managePermission(item, false).catch(e => message(e.message, true));
+        const revoke = document.createElement("button"); revoke.textContent = "Thu hồi";
+        revoke.className = "secondary";
+        revoke.onclick = () => managePermission(item, true).catch(e => message(e.message, true));
+        actions.append(grant, revoke);
+      }
+      box.append(title, info, actions); list.append(box);
+    }
+  }
+  async function preview(item) {
+    if (item.size_bytes > 25 * 1024 * 1024) throw Error("Bản demo chỉ xem trước file tối đa 25 MB; hãy dùng Tải về.");
+    message("Đang tải nội dung để phát...");
+    const blob = await (await api(`/api/media/${encodeURIComponent(item.id)}/stream`)).blob();
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = URL.createObjectURL(blob);
+    const el = document.createElement(item.media_type === "video" ? "video" : item.media_type === "audio" ? "audio" : "img");
+    if (el.tagName !== "IMG") el.controls = true;
+    el.src = previewUrl;
+    $("preview").replaceChildren(el);
+    $("previewTitle").textContent = item.title;
+    $("previewPanel").hidden = false;
+    message("Đã mở media.");
+  }
+  async function downloadFile(item) {
+    message("Đang tải file...");
+    const blob = await (await api(`/api/media/${encodeURIComponent(item.id)}/download`)).blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = item.original_filename || "media";
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    message("Đã yêu cầu tải xuống.");
+  }
+  async function managePermission(item, revoke) {
+    const name = prompt("Tên tài khoản cần " + (revoke ? "thu hồi quyền:" : "cấp quyền:"));
+    if (!name || !name.trim()) return;
+    const path = `/api/media/${encodeURIComponent(item.id)}/permissions`;
+    if (revoke) {
+      await api(path + "/" + encodeURIComponent(name.trim()), {method: "DELETE"});
+    } else {
+      const canDownload = confirm("Cho phép người này tải file?\nOK: Xem và tải | Cancel: Chỉ xem");
+      await api(path, {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({username: name.trim(), can_view: true, can_download: canDownload})});
+    }
+    message("Đã cập nhật quyền cho " + name.trim());
+    await reload();
+  }
+  $("loginForm").addEventListener("submit", async event => {
+    event.preventDefault();
+    try {
+      const form = new FormData(event.target);
+      const body = new URLSearchParams({username: form.get("username"), password: form.get("password")});
+      const result = await (await api("/api/auth/login", {method: "POST", body})).json();
+      token = result.access_token;
+      const user = await (await api("/api/auth/me")).json();
+      $("currentUser").textContent = `${user.display_name || user.username} · ${user.role}`;
+      $("loginPanel").hidden = true; $("workspace").hidden = false;
+      $("password").value = "";
+      await reload(); message("Đăng nhập thành công.");
+    } catch (error) { token = ""; message(error.message, true); }
+  });
+  $("uploadForm").addEventListener("submit", async event => {
+    event.preventDefault();
+    try {
+      message("Đang upload lên Swift...");
+      const data = new FormData(event.target);
+      await api("/api/media/upload", {method: "POST", body: data});
+      event.target.reset(); await reload(); message("Upload thành công.");
+    } catch (error) { message(error.message, true); }
+  });
+  $("refresh").onclick = () => reload().then(() => message("Đã cập nhật danh sách.")).catch(e => message(e.message, true));
+  $("logout").onclick = () => {
+    token = "";
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+    $("preview").replaceChildren(); $("previewPanel").hidden = true;
+    $("workspace").hidden = true; $("loginPanel").hidden = false;
+    message("Đã đăng xuất.");
+  };
+  window.addEventListener("beforeunload", () => { if (previewUrl) URL.revokeObjectURL(previewUrl); });
+</script>
+</body>
+</html>
