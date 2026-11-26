@@ -1,0 +1,58 @@
+heat_template_version: 2018-08-31
+
+description: MediaBox application server managed by Heat
+
+parameters:
+  app_env_b64:
+    type: string
+    hidden: true
+
+  server_group:
+    type: string
+    description: Telemetry group for Heat autoscaling
+
+resources:
+  app_port:
+    type: OS::Neutron::Port
+    properties:
+      network: 51582526-8ccb-4456-a8a8-5c7db28cef1c
+      fixed_ips:
+        - subnet: 68beb899-bc06-4b97-a242-a14f75c8bb3a
+      security_groups:
+        - b802286c-0dac-4a16-9f33-fa8b4104d040
+
+  app_vm:
+    type: OS::Nova::Server
+    properties:
+      image: 82d408ba-9c2e-4645-843b-27e309ea8767
+      flavor: b2d77fde-74fe-4acc-b802-1396057884ae
+      key_name: mediabox-db-key
+      networks:
+        - port: {get_resource: app_port}
+      config_drive: true
+      user_data_format: RAW
+      user_data:
+        str_replace:
+          template: {get_file: bootstrap.sh}
+          params:
+            __APP_TAR_B64__: {get_file: app-bundle.b64}
+            __APP_ENV_B64__: {get_param: app_env_b64}
+
+      metadata:
+        metering.server_group: {get_param: server_group}
+  app_member:
+    type: OS::Octavia::PoolMember
+    depends_on:
+      - app_vm
+    properties:
+      pool: 6c6949a8-653c-41ed-809e-9f09576a1a43
+      address: {get_attr: [app_port, fixed_ips, 0, ip_address]}
+      protocol_port: 8000
+      subnet: 68beb899-bc06-4b97-a242-a14f75c8bb3a
+
+outputs:
+  app_ip:
+    value: {get_attr: [app_port, fixed_ips, 0, ip_address]}
+
+  app_server_id:
+    value: {get_resource: app_vm}

@@ -1,0 +1,42 @@
+heat_template_version: 2018-08-31
+
+description: MediaBox Heat Autoscaling
+
+parameters:
+  app_env_b64:
+    type: string
+    hidden: true
+
+resources:
+  app_group:
+    type: OS::Heat::AutoScalingGroup
+    properties:
+      min_size: 0
+      max_size: 2
+      desired_capacity: 0
+      cooldown: 90
+      resource:
+        type: app-node.yaml
+        properties:
+          app_env_b64: {get_param: app_env_b64}
+          server_group: {get_param: OS::stack_id}
+
+  scale_out:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: app_group}
+      scaling_adjustment: 1
+      cooldown: 90
+
+  scale_in:
+    type: OS::Heat::ScalingPolicy
+    properties:
+      adjustment_type: change_in_capacity
+      auto_scaling_group_id: {get_resource: app_group}
+      scaling_adjustment: -1
+      cooldown: 90
+
+outputs:
+  current_count:
+    value: {get_attr: [app_group, current_size]}
